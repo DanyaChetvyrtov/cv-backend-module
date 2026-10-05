@@ -27,7 +27,6 @@ class SecurityConfiguration(
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests {
                 it.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                it.requestMatchers(HttpMethod.GET, "/", "/index.html", "/app.js", "/favicon.ico").permitAll()
                 it.requestMatchers(HttpMethod.GET, "/api/public", "/actuator/health").permitAll()
                 it.requestMatchers(HttpMethod.GET, "/api/me").authenticated()
                 it.requestMatchers(HttpMethod.GET, "/api/user").hasRole("USER")

@@ -36,9 +36,10 @@ class SecurityIntegrationTest {
     }
 
     @Test
-    fun `demo page and health are public`() {
-        listOf("/", "/app.js", "/actuator/health").forEach { path ->
-            mvc.get(path).andExpect { status { isOk() } }
+    fun `health is public and old UI routes are absent`() {
+        mvc.get("/actuator/health").andExpect { status { isOk() } }
+        listOf("/", "/index.html", "/app.js").forEach { path ->
+            mvc.get(path).andExpect { status { isUnauthorized() } }
         }
     }
 
