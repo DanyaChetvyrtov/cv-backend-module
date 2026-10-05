@@ -9,17 +9,15 @@ Keycloak 26.8.0. База приложения не нужна; Keycloak в эт
 
 ## Быстрый запуск
 
-Нужны Docker и Docker Compose v2. Порты 8080 и 8081 должны быть свободны.
-
-```bash
-cd keycloak-integration-test
-docker compose up --build -d
-docker compose logs -f
-```
+Запуск всего приложения описан в корневом репозитории
+[cv-complex-test](https://github.com/DanyaChetvyrtov/cv-complex-test#запуск-всего-проекта).
+Нужны Docker и Docker Compose v2.20+. Единственный `compose.yaml` находится в корне общего
+проекта; в этом модуле Compose-файлов нет. Все команды Docker Compose ниже выполняйте из
+`cv-complex-test`, а не из `keycloak-integration-test`.
 
 Первая сборка скачивает Gradle и зависимости. Kotlin API доступен на
 **http://127.0.0.1:8080/api/public**, Keycloak — на **http://localhost:8081/**.
-Запустите `../cv-web` по его README и откройте **http://127.0.0.1:5173/**.
+Корневой Compose также запускает React UI на **http://127.0.0.1:5173/**.
 Вход и регистрация открывают форму Keycloak; новый пользователь автоматически получает
 роль `USER` клиента `demo-api`. Пароль вводится только в Keycloak.
 
@@ -38,18 +36,19 @@ Realm, клиенты, роли и пользователи импортирую
 redirect URI и web origin клиента `demo-browser` без удаления пользователей:
 
 ```bash
-python scripts/enable_registration.py --keycloak-url http://127.0.0.1:8081
+python keycloak-integration-test/scripts/enable_registration.py --keycloak-url http://127.0.0.1:8081
 ```
 
-Скрипт использует локальные учётные данные админа `admin` / `admin` из `compose.yml`.
+Скрипт использует локальные учётные данные админа `admin` / `admin` из корневого `compose.yaml`.
 Если они изменены, задайте переменные окружения `KEYCLOAK_ADMIN_USERNAME` и
 `KEYCLOAK_ADMIN_PASSWORD`. Существующие пользователи и роли сохраняются.
 
-Для повторного импорта с нуля удалите данные **учебного** Keycloak:
+Для повторного импорта с нуля удалите данные **учебного** стенда.
+Корневой Compose удалит пользователей/настройки Keycloak и кеш весов модели:
 
 ```bash
 docker compose down -v
-docker compose up --build -d
+docker compose up --build --detach --wait --wait-timeout 600
 ```
 
 Обычная остановка с сохранением настроек: `docker compose down`.
@@ -60,6 +59,8 @@ docker compose up --build -d
 
 ```bash
 docker compose up -d --wait keycloak
+docker compose stop api
+cd keycloak-integration-test
 ./gradlew bootRun
 ```
 
@@ -134,7 +135,8 @@ python3 scripts/smoke_test.py
 200/401/403, отказ при ID token, refresh и невозможность обновить токен после logout.
 Также проверяет браузерный Authorization Code + PKCE, CORS обмена токенов, SSO logout
 и регистрацию нового пользователя с ролью `USER`. Временный аккаунт после проверки удаляется.
-GitHub Actions выполняет сборку, тесты и эту проверку с реальным Keycloak.
+GitHub Actions этого модуля выполняет сборку и тесты Gradle. Проверки с реальным Keycloak
+выполняет CI корневого `cv-complex-test` после запуска единого Compose.
 
 ## Как работает интеграция
 

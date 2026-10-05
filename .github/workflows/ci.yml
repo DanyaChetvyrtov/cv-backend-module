@@ -1,4 +1,4 @@
-name: Build and integration tests
+name: Build and tests
 
 on:
   push:
@@ -20,17 +20,3 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Test and build
         run: ./gradlew --no-daemon clean build
-      - name: Start Keycloak
-        run: docker compose up -d --wait keycloak
-      - name: Start API and verify real tokens
-        run: |
-          java -jar build/libs/app.jar > api.log 2>&1 &
-          python3 scripts/smoke_test.py
-      - name: Show logs on failure
-        if: failure()
-        run: |
-          docker compose logs --no-color
-          cat api.log 2>/dev/null || true
-      - name: Stop Keycloak
-        if: always()
-        run: docker compose down -v
