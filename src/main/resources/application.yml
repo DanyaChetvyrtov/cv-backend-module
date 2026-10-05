@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: keycloak-integration-test
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${keycloak.issuer-uri}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:${keycloak.issuer-uri}/protocol/openid-connect/certs}
+          audiences:
+            - ${keycloak.api-client-id}
+
+keycloak:
+  issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8081/realms/demo}
+  api-client-id: ${KEYCLOAK_API_CLIENT_ID:demo-api}
+  browser-client-id: ${KEYCLOAK_BROWSER_CLIENT_ID:demo-browser}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
