@@ -20,3 +20,5 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Test and build
         run: ./gradlew --no-daemon clean build
+      - name: Test non-destructive Keycloak migration
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'

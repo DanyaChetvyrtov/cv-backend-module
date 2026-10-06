@@ -30,20 +30,18 @@
       "bearerOnly": true
     },
     {
-      "clientId": "demo-browser",
-      "name": "Browser Demo (PKCE)",
+      "clientId": "demo-bff",
+      "name": "Kotlin BFF (Confidential + PKCE)",
       "protocol": "openid-connect",
       "enabled": true,
-      "publicClient": true,
+      "publicClient": false,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "implicitFlowEnabled": false,
       "redirectUris": [
-        "http://127.0.0.1:5173/"
+        "http://127.0.0.1:5173/api/auth/callback/keycloak"
       ],
-      "webOrigins": [
-        "http://127.0.0.1:5173"
-      ],
+      "webOrigins": [],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://127.0.0.1:5173/"
@@ -76,56 +74,13 @@
             "jsonType.label": "String",
             "multivalued": "true",
             "access.token.claim": "true",
-            "id.token.claim": "false",
-            "userinfo.token.claim": "false",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
             "introspection.token.claim": "true"
           }
         }
-      ]
-    },
-    {
-      "clientId": "demo-cli",
-      "name": "Local Smoke Tests Only",
-      "protocol": "openid-connect",
-      "enabled": true,
-      "publicClient": true,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
-      "implicitFlowEnabled": false,
-      "defaultClientScopes": [
-        "basic",
-        "profile",
-        "email"
       ],
-      "fullScopeAllowed": false,
-      "protocolMappers": [
-        {
-          "name": "api-audience",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.client.audience": "demo-api",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        },
-        {
-          "name": "api-roles",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-usermodel-client-role-mapper",
-          "config": {
-            "usermodel.clientRoleMapping.clientId": "demo-api",
-            "claim.name": "resource_access.demo-api.roles",
-            "jsonType.label": "String",
-            "multivalued": "true",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "true"
-          }
-        }
-      ]
+      "secret": "local-bff-secret"
     }
   ],
   "groups": [
@@ -186,14 +141,7 @@
   "clientScopeMappings": {
     "demo-api": [
       {
-        "client": "demo-browser",
-        "roles": [
-          "USER",
-          "ADMIN"
-        ]
-      },
-      {
-        "client": "demo-cli",
+        "client": "demo-bff",
         "roles": [
           "USER",
           "ADMIN"

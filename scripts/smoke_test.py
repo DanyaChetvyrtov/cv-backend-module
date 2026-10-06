@@ -1,301 +1,242 @@
 #!/usr/bin/env python3
-"""Verify a running API against real Keycloak tokens using only Python's standard library."""
+"""Exercise the full BFF through its public web origin with a real Keycloak and CV (stdlib only)."""
+
 import argparse
-import base64
-import hashlib
 import http.cookiejar
 import json
 import os
 import secrets
-import time
+import struct
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from html.parser import HTMLParser
 
-# Local services must bypass any HTTP proxy configured on the developer's machine.
-http_client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+class BrowserReturn(Exception):
+    pass
 
 
-def request(url, token=None, form=None):
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if form is not None:
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-    req = urllib.request.Request(
-        url, data=urllib.parse.urlencode(form).encode() if form is not None else None, headers=headers
-    )
-    try:
-        with http_client.open(req, timeout=5) as response:
-            return response.status, response.read().decode()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read().decode()
-
-
-def wait_for(url, seconds):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            if request(url)[0] == 200:
-                return
-        except (urllib.error.URLError, TimeoutError):
-            pass
-        time.sleep(1)
-    raise SystemExit(f"Service did not become ready: {url}")
-
-
-def expect(url, expected, token=None):
-    status, body = request(url, token)
-    if status != expected:
-        raise SystemExit(f"FAIL {url}: expected HTTP {expected}, got {status}: {body}")
-    print(f"PASS HTTP {status}: {urllib.parse.urlsplit(url).path}")
-    return json.loads(body) if body else None
-
-
-def login(issuer, username, password):
-    status, body = request(f"{issuer}/protocol/openid-connect/token", form={
-        "grant_type": "password", "client_id": "demo-cli", "scope": "openid profile email",
-        "username": username, "password": password,
-    })
-    if status != 200:
-        raise SystemExit(f"Login failed for {username}: HTTP {status}: {body}")
-    return json.loads(body)
-
-
-class LoginForm(HTMLParser):
-    action = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "form" and attrs.get("id") == "kc-form-login":
-            self.action = attrs.get("action")
-
-
-class RegistrationForm(HTMLParser):
-    action = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "form" and attrs.get("id") == "kc-register-form":
-            self.action = attrs.get("action")
-
-
-class BrowserCallback(Exception):
-    def __init__(self, url):
-        self.url = url
-
-
-class CaptureWebRedirect(urllib.request.HTTPRedirectHandler):
-    def __init__(self, web_origin):
-        self.web_origin = web_origin
+class CaptureReturn(urllib.request.HTTPRedirectHandler):
+    def __init__(self, origin):
+        self.origin = origin
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if newurl.startswith(self.web_origin + "/"):
-            raise BrowserCallback(newurl)
+        parsed = urllib.parse.urlsplit(newurl)
+        if newurl.startswith(self.origin + "/") and parsed.path == "/":
+            if urllib.parse.parse_qs(parsed.query).get("auth") == ["error"]:
+                raise SystemExit("BFF rejected the OIDC callback")
+            raise BrowserReturn(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-class LocalhostCookiePolicy(http.cookiejar.DefaultCookiePolicy):
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class LocalhostCookies(http.cookiejar.DefaultCookiePolicy):
     def return_ok_secure(self, cookie, request):
-        # Browsers treat HTTP localhost as a secure context; Python's cookie jar does not.
         if request.type == "http" and urllib.parse.urlsplit(request.full_url).hostname in ("localhost", "127.0.0.1"):
             return True
         return super().return_ok_secure(cookie, request)
 
 
-def check_browser_login(api, issuer, web_origin):
-    """Exercise the same Authorization Code + PKCE protocol used by the demo page."""
-    browser = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar(policy=LocalhostCookiePolicy())),
-        CaptureWebRedirect(web_origin),
-    )
-    verifier, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    params = urllib.parse.urlencode({
-        "client_id": "demo-browser", "redirect_uri": f"{web_origin}/", "response_type": "code",
-        "scope": "openid profile email", "state": state,
-        "code_challenge": challenge, "code_challenge_method": "S256",
-    })
-    with browser.open(f"{issuer}/protocol/openid-connect/auth?{params}", timeout=10) as response:
-        form = LoginForm()
-        form.feed(response.read().decode())
-    if not form.action:
-        raise SystemExit("Keycloak browser login form was not returned")
-    try:
-        browser.open(form.action, data=urllib.parse.urlencode({
-            "username": "demo", "password": "demo123", "credentialId": "",
-        }).encode(), timeout=10)
-    except BrowserCallback as redirect:
-        callback = urllib.parse.urlsplit(redirect.url)
-    else:
-        raise SystemExit("Keycloak did not redirect back to CV Web")
-    query = urllib.parse.parse_qs(callback.query)
-    if query.get("state") != [state] or "code" not in query:
-        raise SystemExit("Authorization Code callback or state validation failed")
-    if query.get("iss") not in (None, [issuer]):
-        raise SystemExit("Unexpected callback issuer")
-    req = urllib.request.Request(f"{issuer}/protocol/openid-connect/token", headers={
-        "Origin": web_origin, "Content-Type": "application/x-www-form-urlencoded",
-    }, data=urllib.parse.urlencode({
-        "grant_type": "authorization_code", "client_id": "demo-browser", "redirect_uri": f"{web_origin}/",
-        "code": query["code"][0], "code_verifier": verifier,
-    }).encode())
-    with browser.open(req, timeout=10) as response:
-        if response.headers.get("Access-Control-Allow-Origin") != web_origin:
-            raise SystemExit("Token endpoint did not permit the demo browser origin")
-        tokens = json.load(response)
-    expect(f"{api}/api/me", 200, tokens["access_token"])
-    expect(f"{api}/api/admin", 403, tokens["access_token"])
-    logout_params = urllib.parse.urlencode({
-        "client_id": "demo-browser", "id_token_hint": tokens["id_token"], "post_logout_redirect_uri": f"{web_origin}/",
-    })
-    try:
-        browser.open(f"{issuer}/protocol/openid-connect/logout?{logout_params}", timeout=10)
-    except BrowserCallback as redirect:
-        if redirect.url != f"{web_origin}/":
-            raise SystemExit("Browser logout did not return to CV Web")
-    else:
-        raise SystemExit("Browser logout did not redirect to CV Web")
-    # With the SSO cookie invalidated, another authorization request must show the login form.
-    with browser.open(f"{issuer}/protocol/openid-connect/auth?{params}", timeout=10) as response:
-        form = LoginForm()
-        form.feed(response.read().decode())
-    if not form.action:
-        raise SystemExit("Browser logout did not end the Keycloak SSO session")
-    print("PASS browser Authorization Code + PKCE, CORS and SSO logout")
+class Form(HTMLParser):
+    def __init__(self, expected):
+        super().__init__()
+        self.expected = expected
+        self.action = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form" and attrs.get("id") == self.expected:
+            self.action = attrs.get("action")
 
 
-def check_browser_registration(api, issuer, web_origin):
-    """Register a temporary account and check its API role, then remove it."""
-    browser = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar(policy=LocalhostCookiePolicy())),
-        CaptureWebRedirect(web_origin),
-    )
-    username = f"smoke-{secrets.token_hex(8)}"
-    verifier, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    params = urllib.parse.urlencode({
-        "client_id": "demo-browser", "redirect_uri": f"{web_origin}/", "response_type": "code",
-        "scope": "openid profile email", "state": state, "prompt": "create",
-        "code_challenge": challenge, "code_challenge_method": "S256",
-    })
+def send(client, url, expected=200, data=None, headers=None, method=None):
     try:
-        with browser.open(f"{issuer}/protocol/openid-connect/auth?{params}", timeout=10) as response:
-            form = RegistrationForm()
-            form.feed(response.read().decode())
-        if not form.action:
-            raise SystemExit("Keycloak registration form was not returned")
-        try:
-            browser.open(form.action, data=urllib.parse.urlencode({
-                "username": username, "email": f"{username}@example.test",
-                "firstName": "Smoke", "lastName": "Test",
-                "password": "Demo123!", "password-confirm": "Demo123!",
-            }).encode(), timeout=10)
-        except BrowserCallback as redirect:
-            callback = urllib.parse.urlsplit(redirect.url)
-        else:
-            raise SystemExit("Registration did not redirect to CV Web")
-        query = urllib.parse.parse_qs(callback.query)
-        if query.get("state") != [state] or "code" not in query:
-            raise SystemExit("Registration did not return an Authorization Code callback")
-        with browser.open(urllib.request.Request(
-            f"{issuer}/protocol/openid-connect/token",
-            headers={"Origin": web_origin, "Content-Type": "application/x-www-form-urlencoded"},
-            data=urllib.parse.urlencode({
-                "grant_type": "authorization_code", "client_id": "demo-browser",
-                "redirect_uri": f"{web_origin}/", "code": query["code"][0], "code_verifier": verifier,
-            }).encode(),
-        ), timeout=10) as response:
-            tokens = json.load(response)
-        profile = expect(f"{api}/api/me", 200, tokens["access_token"])
-        if profile["username"] != username or profile["roles"] != ["USER"]:
-            raise SystemExit(f"Unexpected registered profile: {profile}")
-        expect(f"{api}/api/user", 200, tokens["access_token"])
-        expect(f"{api}/api/admin", 403, tokens["access_token"])
-        print("PASS browser registration and default USER role")
-    finally:
-        keycloak_url, realm_name = issuer.rsplit("/realms/", 1)
-        status, body = request(f"{keycloak_url}/realms/master/protocol/openid-connect/token", form={
-            "grant_type": "password", "client_id": "admin-cli",
-            "username": os.getenv("KEYCLOAK_ADMIN_USERNAME", "admin"),
-            "password": os.getenv("KEYCLOAK_ADMIN_PASSWORD", "admin"),
-        })
-        if status != 200:
-            raise SystemExit("Could not clean up the registration smoke user: admin login failed")
-        admin_token = json.loads(body)["access_token"]
-        users_url = f"{keycloak_url}/admin/realms/{urllib.parse.quote(realm_name, safe='')}/users"
-        query_url = f"{users_url}?{urllib.parse.urlencode({'username': username, 'exact': 'true'})}"
-        with http_client.open(urllib.request.Request(
-            query_url, headers={"Authorization": f"Bearer {admin_token}"},
-        ), timeout=10) as response:
-            users = json.load(response)
-        for user in users:
-            if user["username"] == username:
-                with http_client.open(urllib.request.Request(
-                    f"{users_url}/{user['id']}", method="DELETE",
-                    headers={"Authorization": f"Bearer {admin_token}"},
-                ), timeout=10):
-                    pass
+        with client.open(urllib.request.Request(url, data=data, headers=headers or {}, method=method), timeout=130) as response:
+            status, body, response_headers = response.status, response.read(), response.headers
+    except urllib.error.HTTPError as error:
+        status, body, response_headers = error.code, error.read(), error.headers
+    if status != expected:
+        # Avoid printing token/client credential responses on a failed test.
+        raise SystemExit(f"FAIL {urllib.parse.urlsplit(url).path}: expected HTTP {expected}, got {status}")
+    return body, response_headers
+
+
+def blank_png():
+    def chunk(kind, data):
+        return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress((b"\x00" + b"\x00\x00\x00" * 64) * 64)) + chunk(b"IEND", b""))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api", default="http://localhost:8080")
-    parser.add_argument("--issuer", default="http://localhost:8081/realms/demo")
-    parser.add_argument("--web-origin", default="http://127.0.0.1:5173")
-    parser.add_argument("--wait", type=int, default=180, help="Startup timeout in seconds")
+    parser.add_argument("--web-url", default="http://127.0.0.1:5173")
+    parser.add_argument("--keycloak-url", default="http://localhost:8081")
     args = parser.parse_args()
-    api, issuer = args.api.rstrip("/"), args.issuer.rstrip("/")
-    web_origin = args.web_origin.rstrip("/")
-    wait_for(f"{issuer}/.well-known/openid-configuration", args.wait)
-    wait_for(f"{api}/actuator/health", args.wait)
+    web, keycloak = args.web_url.rstrip("/"), args.keycloak_url.rstrip("/")
+    plain = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    expect(f"{api}/api/public", 200)
-    for endpoint in ("me", "user", "admin"):
-        expect(f"{api}/api/{endpoint}", 401)
-    expect(f"{api}/api/me", 401, "not-a-jwt")
+    token_body, _ = send(plain, keycloak + "/realms/master/protocol/openid-connect/token", data=urllib.parse.urlencode({
+        "client_id": "admin-cli", "grant_type": "password", "username": os.getenv("KEYCLOAK_ADMIN_USERNAME", "admin"),
+        "password": os.getenv("KEYCLOAK_ADMIN_PASSWORD", "admin"),
+    }).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
+    admin_token = json.loads(token_body)["access_token"]
 
-    user = login(issuer, "demo", "demo123")
-    profile = expect(f"{api}/api/me", 200, user["access_token"])
-    if profile["username"] != "demo" or profile["roles"] != ["USER"]:
-        raise SystemExit(f"Unexpected demo profile: {profile}")
-    expect(f"{api}/api/user", 200, user["access_token"])
-    expect(f"{api}/api/admin", 403, user["access_token"])
-    # An ID token targets the CLI client, not this resource server.
-    expect(f"{api}/api/me", 401, user["id_token"])
+    def admin(path, method="GET", body=None, expected=200):
+        payload, _ = send(plain, keycloak + "/admin/realms/demo" + path, expected=expected, method=method,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers={"Authorization": "Bearer " + admin_token, "Content-Type": "application/json"})
+        return json.loads(payload) if payload else None
 
-    manager = login(issuer, "manager", "manager123")
-    profile = expect(f"{api}/api/me", 200, manager["access_token"])
-    if profile["username"] != "manager" or profile["roles"] != ["ADMIN", "USER"]:
-        raise SystemExit(f"Unexpected manager profile: {profile}")
-    expect(f"{api}/api/user", 200, manager["access_token"])
-    expect(f"{api}/api/admin", 200, manager["access_token"])
+    bff_clients = admin("/clients?clientId=demo-bff")
+    if len(bff_clients) != 1:
+        raise SystemExit("Expected exactly one confidential BFF client")
+    client_path = "/clients/" + bff_clients[0]["id"]
+    representation = admin(client_path)
+    if representation.get("publicClient") or representation.get("directAccessGrantsEnabled"):
+        raise SystemExit("The BFF client must be confidential without password grants")
+    for legacy in ("demo-browser", "demo-cli"):
+        if any(client.get("enabled") for client in admin("/clients?clientId=" + legacy)):
+            raise SystemExit("Legacy browser/password-grant client is still enabled")
+    previous_lifespan = representation.get("attributes", {}).get("access.token.lifespan")
+    # Spring refreshes tokens with <=60s remaining: exercise real server refresh without a long sleep.
+    representation.setdefault("attributes", {})["access.token.lifespan"] = "60"
+    admin(client_path, "PUT", representation, expected=204)
+    temporary_user = None
 
-    status, body = request(f"{issuer}/protocol/openid-connect/token", form={
-        "grant_type": "refresh_token", "client_id": "demo-cli", "refresh_token": user["refresh_token"],
-    })
-    if status != 200:
-        raise SystemExit(f"Refresh failed: HTTP {status}: {body}")
-    refreshed = json.loads(body)
-    expect(f"{api}/api/me", 200, refreshed["access_token"])
+    def browser():
+        jar = http.cookiejar.CookieJar(policy=LocalhostCookies())
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(jar), CaptureReturn(web))
+        return opener, jar
 
-    status, body = request(f"{issuer}/protocol/openid-connect/logout", form={
-        "client_id": "demo-cli", "refresh_token": refreshed["refresh_token"],
-    })
-    if status != 204:
-        raise SystemExit(f"Logout failed: HTTP {status}: {body}")
-    status, _ = request(f"{issuer}/protocol/openid-connect/token", form={
-        "grant_type": "refresh_token", "client_id": "demo-cli", "refresh_token": refreshed["refresh_token"],
-    })
-    if status != 400:
-        raise SystemExit(f"Refresh after logout should fail with HTTP 400, got {status}")
-    print("PASS token refresh and logout invalidate the refresh session")
-    check_browser_login(api, issuer, web_origin)
-    check_browser_registration(api, issuer, web_origin)
-    print("All smoke checks passed.")
+    def api(client, path, expected=200, **kwargs):
+        body, headers = send(client, web + path, expected=expected, **kwargs)
+        print(f"PASS HTTP {expected}: {path}")
+        return body, headers
+
+    def csrf(client):
+        body, _ = api(client, "/api/auth/csrf")
+        return json.loads(body)
+
+    def authorize(client, jar, username, password, register=False):
+        starter = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(jar), NoRedirect())
+        _, headers = send(starter, web + ("/api/auth/register" if register else "/api/auth/login"), expected=302)
+        authorization_url = urllib.parse.urljoin(web + "/", headers["Location"])
+        assert authorization_url.startswith(web + "/api/auth/authorize/")
+        _, headers = send(starter, authorization_url, expected=302)
+        location = headers["Location"]
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)
+        assert params["client_id"] == ["demo-bff"]
+        assert params["redirect_uri"] == [web + "/api/auth/callback/keycloak"]
+        assert params["code_challenge_method"] == ["S256"]
+        assert params.get("state") and params.get("nonce")
+        assert "client_secret" not in params and "code_verifier" not in params
+        form_body, _ = send(client, location)
+        form = Form("kc-register-form" if register else "kc-form-login")
+        form.feed(form_body.decode())
+        if not form.action:
+            raise SystemExit("Keycloak did not return the requested form")
+        values = {"username": username, "password": password}
+        if register:
+            values.update({"email": username + "@example.test", "firstName": "BFF", "lastName": "Test", "password-confirm": password})
+        else:
+            values["credentialId"] = ""
+        try:
+            send(client, form.action, data=urllib.parse.urlencode(values).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
+        except BrowserReturn:
+            pass
+        else:
+            raise SystemExit("Keycloak/BFF did not return to the UI")
+        cookies = [cookie for cookie in jar if cookie.name == "BFFSESSION"]
+        assert len(cookies) == 1 and cookies[0].has_nonstandard_attr("HttpOnly")
+        assert cookies[0].get_nonstandard_attr("SameSite", "").lower() == "lax"
+        body, _ = api(client, "/api/me")
+        profile = json.loads(body)
+        assert profile["username"] == username
+        assert not any("token" in field.lower() or "secret" in field.lower() for field in profile)
+        api(client, "/api/me")  # A reload/repeated request keeps the server session.
+        return profile
+
+    def logout(client):
+        value = csrf(client)
+        try:
+            send(client, web + "/api/auth/logout", data=urllib.parse.urlencode({value["parameterName"]: value["token"]}).encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+        except BrowserReturn:
+            pass
+        else:
+            raise SystemExit("OIDC logout did not return to the UI")
+        api(client, "/api/me", expected=401)
+
+    def detect(client, image, confidence="0.25", expected=200, include_csrf=True):
+        boundary = "bff-smoke-boundary"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="smoke.png"\r\n'
+                f"Content-Type: image/png\r\n\r\n").encode() + image + f"\r\n--{boundary}--\r\n".encode()
+        headers = {"Content-Type": "multipart/form-data; boundary=" + boundary}
+        if include_csrf:
+            value = csrf(client)
+            headers[value["headerName"]] = value["token"]
+        result, _ = api(client, "/api/vision/detect?confidence=" + confidence, expected=expected, data=body, headers=headers)
+        return json.loads(result) if result else None
+
+    try:
+        html, _ = send(plain, web + "/")
+        assert b'<div id="root">' in html and b"/assets/" in html
+        public, _ = api(plain, "/api/public")
+        assert "issuerUri" not in json.loads(public)
+        health, _ = api(plain, "/api/health")
+        assert json.loads(health)["status"] == "ok"
+        for endpoint in ("me", "user", "admin"):
+            api(plain, "/api/" + endpoint, expected=401)
+        api(plain, "/api/me", expected=401, headers={"Authorization": "Bearer browser-token-is-not-accepted"})
+        anonymous, _ = browser()
+        detect(anonymous, blank_png(), expected=401)
+        user, user_jar = browser()
+        profile = authorize(user, user_jar, "demo", "demo123")
+        assert profile["roles"] == ["USER"]
+        api(user, "/api/user")
+        api(user, "/api/admin", expected=403)
+        detect(user, blank_png(), expected=403, include_csrf=False)
+        result = detect(user, blank_png())
+        assert (result["width"], result["height"]) == (64, 64) and isinstance(result["detections"], list)
+        detect(user, blank_png(), confidence="0", expected=422)
+        detect(user, b"not an image", expected=400)
+        detect(user, b"x" * (10 * 1024 * 1024 + 1), expected=413)
+        api(user, "/api/auth/logout", expected=403, data=b"")
+        logout(user)
+        manager, manager_jar = browser()
+        profile = authorize(manager, manager_jar, "manager", "manager123")
+        assert set(profile["roles"]) == {"USER", "ADMIN"}
+        api(manager, "/api/admin")
+        logout(manager)
+        temporary_user = "bff-smoke-" + secrets.token_hex(8)
+        registered, registered_jar = browser()
+        profile = authorize(registered, registered_jar, temporary_user, "Demo123!", register=True)
+        assert profile["roles"] == ["USER"]
+        api(registered, "/api/user")
+        api(registered, "/api/admin", expected=403)
+        matches = admin("/users?username=" + temporary_user + "&exact=true")
+        assert len(matches) == 1
+        # Only revoke the unique account created by this test, never existing demo/user sessions.
+        admin("/users/" + matches[0]["id"] + "/logout", "POST", expected=204)
+        api(registered, "/api/me", expected=401)
+        print("PASS BFF login, registration, cookie/CSRF, USER/ADMIN, server refresh, provider revocation, logout and real CV")
+    finally:
+        if temporary_user:
+            for account in admin("/users?username=" + temporary_user + "&exact=true"):
+                admin("/users/" + account["id"], "DELETE", expected=204)
+        current = admin(client_path)
+        if previous_lifespan is None:
+            current.setdefault("attributes", {}).pop("access.token.lifespan", None)
+        else:
+            current.setdefault("attributes", {})["access.token.lifespan"] = previous_lifespan
+        admin(client_path, "PUT", current, expected=204)
 
 
 if __name__ == "__main__":
