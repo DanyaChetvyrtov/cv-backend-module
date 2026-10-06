@@ -90,10 +90,22 @@ def configure(base, realm_name, public_url, secret):
     admin(mapping, "POST", [next(role for role in roles if role["name"] == "USER")])
     admin("/default-groups/" + group["id"], "PUT")
     realm = admin()
-    if not realm.get("registrationAllowed"):
-        realm["registrationAllowed"] = True
+    realm_changed = False
+    desired_realm = {
+        "registrationAllowed": True,
+        "loginTheme": "cv-access",
+        "internationalizationEnabled": True,
+        "supportedLocales": ["ru", "en"],
+        "defaultLocale": "ru",
+        "displayName": "CV Access",
+    }
+    for key, value in desired_realm.items():
+        if realm.get(key) != value:
+            realm[key] = value
+            realm_changed = True
+    if realm_changed:
         admin(method="PUT", body=realm)
-    print("BFF client, PKCE, role scopes and registration configured; existing users preserved.")
+    print("BFF client, PKCE, role scopes, registration and CV Access theme configured; existing users preserved.")
 
 
 def main():
