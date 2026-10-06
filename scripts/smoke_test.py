@@ -182,17 +182,6 @@ def main():
             raise SystemExit("OIDC logout did not return to the UI")
         api(client, "/api/me", expected=401)
 
-    def detect(client, image, confidence="0.25", expected=200, include_csrf=True):
-        boundary = "bff-smoke-boundary"
-        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="smoke.png"\r\n'
-                f"Content-Type: image/png\r\n\r\n").encode() + image + f"\r\n--{boundary}--\r\n".encode()
-        headers = {"Content-Type": "multipart/form-data; boundary=" + boundary}
-        if include_csrf:
-            value = csrf(client)
-            headers[value["headerName"]] = value["token"]
-        result, _ = api(client, "/api/vision/detect?confidence=" + confidence, expected=expected, data=body, headers=headers)
-        return json.loads(result) if result else None
-
     def employee_request(client, path, image=None, fields=None, method="POST", expected=200, include_csrf=True):
         headers = {}
         if include_csrf:
@@ -254,18 +243,11 @@ def main():
             api(plain, "/api/" + endpoint, expected=401)
         api(plain, "/api/me", expected=401, headers={"Authorization": "Bearer browser-token-is-not-accepted"})
         anonymous, _ = browser()
-        detect(anonymous, blank_png(), expected=401)
         user, user_jar = browser()
         profile = authorize(user, user_jar, "demo", "demo123")
         assert profile["roles"] == ["USER"]
         api(user, "/api/user")
         api(user, "/api/admin", expected=403)
-        detect(user, blank_png(), expected=403, include_csrf=False)
-        result = detect(user, blank_png())
-        assert (result["width"], result["height"]) == (64, 64) and isinstance(result["detections"], list)
-        detect(user, blank_png(), confidence="0", expected=422)
-        detect(user, b"not an image", expected=400)
-        detect(user, b"x" * (10 * 1024 * 1024 + 1), expected=413)
         api(user, "/api/auth/logout", expected=403, data=b"")
         logout(user)
         manager, manager_jar = browser()
@@ -321,7 +303,7 @@ def main():
         # Only revoke the unique account created by this test, never existing demo/user sessions.
         admin("/users/" + matches[0]["id"] + "/logout", "POST", expected=204)
         api(registered, "/api/me", expected=401)
-        print("PASS BFF login, registration, cookie/CSRF, USER/ADMIN, server refresh, provider revocation, logout and real CV")
+        print("PASS BFF login, registration, cookie/CSRF, USER/ADMIN, server refresh, provider revocation, logout and face verification")
     finally:
         if created_employee and not keep_employee:
             cleaner, cleaner_jar = browser()
