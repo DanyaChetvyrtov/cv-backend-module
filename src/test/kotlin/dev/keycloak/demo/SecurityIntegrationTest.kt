@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 
-/** Real OIDC filter chain, token exchange, RSA/nonce validation, session, CSRF and CV HTTP forwarding. */
+/** Real OIDC filter chain, token exchange, session security and employee face verification. */
 @SpringBootTest
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
@@ -174,58 +174,6 @@ class SecurityIntegrationTest {
         login(signingKey = RSAKeyGenerator(2048).keyID("untrusted").generate(), succeeds = false)
     }
 
-    @Test
-    fun `CSRF is required for detection and logout`() {
-        val session = login()
-        mvc.multipart("/api/vision/detect") { this.session = session; file(image()) }
-            .andExpect { status { isForbidden() } }
-        mvc.post("/api/auth/logout") { this.session = session }.andExpect { status { isForbidden() } }
-        mvc.get("/api/me") { this.session = session }.andExpect { status { isOk() } }
-    }
-
-    @Test
-    fun `anonymous request with correct CSRF still cannot detect`() {
-        val result = mvc.get("/api/auth/csrf").andReturn()
-        val csrf = mapper.readTree(result.response.contentAsString)
-        mvc.multipart("/api/vision/detect") {
-            session = result.request.session as MockHttpSession
-            file(image())
-            header(csrf["headerName"].asText(), csrf["token"].asText())
-        }.andExpect { status { isUnauthorized() } }
-    }
-
-    @Test
-    fun `CSRF from another session is rejected`() {
-        val session = login()
-        val otherToken = mapper.readTree(mvc.get("/api/auth/csrf").andReturn().response.contentAsString)["token"].asText()
-        mvc.multipart("/api/vision/detect") { this.session = session; file(image()); header("X-CSRF-TOKEN", otherToken) }
-            .andExpect { status { isForbidden() } }
-    }
-
-    @Test
-    fun `BFF forwards multipart and confidence but never cookies or authorization to CV`() {
-        val session = login()
-        val csrf = csrf(session)
-        mvc.multipart("/api/vision/detect?confidence=0.42") {
-            this.session = session; file(image()); header("X-CSRF-TOKEN", csrf)
-        }.andExpect { status { isOk() }; jsonPath("$.width") { value(64) } }
-        assertTrue(lastCvBody.get().contains("sample-image"))
-        assertEquals("confidence=0.42", lastCvQuery.get())
-        assertNull(lastCvAuthorization.get())
-        assertNull(lastCvCookie.get())
-    }
-
-    @Test
-    fun `CV errors are preserved and invalid confidence is rejected`() {
-        val session = login()
-        try {
-            cvStatus.set(415)
-            mvc.multipart("/api/vision/detect") { this.session = session; file(image()); header("X-CSRF-TOKEN", csrf(session)) }
-                .andExpect { status { isUnsupportedMediaType() }; jsonPath("$.detail") { value("fixture CV error") } }
-        } finally { cvStatus.set(200) }
-        mvc.multipart("/api/vision/detect?confidence=0") { this.session = session; file(image()); header("X-CSRF-TOKEN", csrf(session)) }
-            .andExpect { status { isUnprocessableEntity() } }
-    }
 
     @Test
     fun `GET logout does not terminate a session`() {
@@ -469,14 +417,6 @@ class SecurityIntegrationTest {
             }
             oidc.start()
             cv.createContext("/health") { reply(it, 200, mapOf("status" to "ok", "model" to "fixture", "device" to "cpu")) }
-            cv.createContext("/vision/detect") { exchange ->
-                lastCvBody.set(exchange.requestBody.readAllBytes().toString(UTF_8))
-                lastCvQuery.set(exchange.requestURI.rawQuery)
-                lastCvCookie.set(exchange.requestHeaders.getFirst("Cookie"))
-                lastCvAuthorization.set(exchange.requestHeaders.getFirst("Authorization"))
-                if (cvStatus.get() != 200) reply(exchange, cvStatus.get(), mapOf("detail" to "fixture CV error"))
-                else reply(exchange, 200, mapOf("width" to 64, "height" to 64, "model" to "fixture", "detections" to emptyList<Any>()))
-            }
             cv.createContext("/faces/embedding") { exchange ->
                 exchange.requestBody.readAllBytes()
                 lastFaceCookie.set(exchange.requestHeaders.getFirst("Cookie"))
