@@ -1,0 +1,297 @@
+:root {
+  --cv-bg: #090e19;
+  --cv-panel: #121b29;
+  --cv-panel-strong: #0c1521;
+  --cv-border: #263245;
+  --cv-border-input: #3a4c63;
+  --cv-text: #e8eef9;
+  --cv-muted: #8493a9;
+  --cv-accent: #74e3b2;
+  --cv-accent-hover: #95f1c7;
+  --cv-accent-dark: #0a231b;
+  --cv-danger: #ffaea6;
+}
+
+html,
+body {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 85% 0%, #15283a 0, transparent 32%),
+    radial-gradient(circle at 10% 36%, #10251f 0, transparent 26%),
+    var(--cv-bg) !important;
+  color: var(--cv-text);
+}
+
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.login-pf,
+.pf-v5-c-login {
+  min-height: 100vh;
+  background: transparent !important;
+}
+
+.pf-v5-c-login__container {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px 20px;
+}
+
+.pf-v5-c-login__main {
+  position: relative;
+  width: min(100%, 460px);
+  border: 1px solid var(--cv-border);
+  border-radius: 18px;
+  background: rgba(18, 27, 41, 0.97);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+}
+
+.pf-v5-c-login__main::before {
+  content: "⌗  CV Access";
+  display: block;
+  padding: 24px 28px 0;
+  color: #f7fafc;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.6px;
+}
+
+.pf-v5-c-login__main::after {
+  content: "FACE RECOGNITION · SECURE ACCESS";
+  display: block;
+  position: absolute;
+  top: 56px;
+  left: 29px;
+  color: #72dcad;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.7px;
+  pointer-events: none;
+}
+
+.pf-v5-c-login__main-header,
+.pf-v5-c-login__main-body,
+.pf-v5-c-login__main-footer {
+  padding-left: 28px;
+  padding-right: 28px;
+}
+
+.pf-v5-c-login__main-header {
+  padding-top: 54px;
+  padding-bottom: 18px;
+}
+
+.pf-v5-c-login__main-body {
+  padding-bottom: 24px;
+}
+
+.pf-v5-c-login__main-footer {
+  padding-bottom: 26px;
+}
+
+#kc-page-title,
+.pf-v5-c-title {
+  color: #f8fbff !important;
+  font-size: 28px !important;
+  line-height: 1.2 !important;
+  letter-spacing: -1px;
+  font-weight: 760 !important;
+}
+
+.pf-v5-c-form__label,
+.pf-v5-c-form__label-text,
+label {
+  color: #c4d3e3 !important;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.pf-v5-c-form-control,
+input[type="text"],
+input[type="email"],
+input[type="password"] {
+  min-height: 44px;
+  border: 1px solid var(--cv-border-input) !important;
+  border-radius: 9px !important;
+  background: var(--cv-panel-strong) !important;
+  color: var(--cv-text) !important;
+  box-shadow: none !important;
+}
+
+.pf-v5-c-form-control:hover {
+  border-color: #4b6079 !important;
+}
+
+.pf-v5-c-form-control:focus,
+.pf-v5-c-form-control:focus-within,
+input:focus {
+  border-color: var(--cv-accent) !important;
+  outline: 2px solid rgba(115, 228, 176, 0.18) !important;
+  outline-offset: 1px;
+}
+
+.pf-v5-c-form-control input {
+  color: var(--cv-text) !important;
+}
+
+.pf-v5-c-button.pf-m-primary,
+input.pf-v5-c-button.pf-m-primary {
+  min-height: 46px;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: var(--cv-accent) !important;
+  color: var(--cv-accent-dark) !important;
+  font-weight: 800 !important;
+  box-shadow: 0 7px 24px rgba(103, 227, 174, 0.13);
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+input.pf-v5-c-button.pf-m-primary:hover {
+  background: var(--cv-accent-hover) !important;
+}
+
+.pf-v5-c-button.pf-m-secondary,
+.pf-v5-c-button.pf-m-tertiary,
+.pf-v5-c-button.pf-m-control {
+  border-color: #3a5262 !important;
+  border-radius: 8px !important;
+  background: #1a2a36 !important;
+  color: #c9edda !important;
+}
+
+.pf-v5-c-button.pf-m-control:hover,
+.pf-v5-c-button.pf-m-secondary:hover,
+.pf-v5-c-button.pf-m-tertiary:hover {
+  border-color: #83dfb4 !important;
+}
+
+a,
+.pf-v5-c-button.pf-m-link {
+  color: #81e2b8 !important;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+a:hover,
+.pf-v5-c-button.pf-m-link:hover {
+  color: #a1f0cb !important;
+  text-decoration: none;
+}
+
+.pf-v5-c-login__main-footer-band,
+#kc-form-options {
+  color: var(--cv-muted);
+  font-size: 12px;
+}
+
+.pf-v5-c-check__label {
+  color: #9fb3c5 !important;
+}
+
+.pf-v5-c-check__input {
+  accent-color: var(--cv-accent);
+}
+
+.pf-v5-c-alert {
+  border: 1px solid #704149 !important;
+  border-radius: 10px !important;
+  background: #34232a !important;
+  color: #ffc1b9 !important;
+  box-shadow: none !important;
+}
+
+.pf-v5-c-alert.pf-m-success {
+  border-color: #356450 !important;
+  background: #15392c !important;
+  color: #a2ebc4 !important;
+}
+
+.pf-v5-c-alert.pf-m-warning {
+  border-color: #756337 !important;
+  background: #342e20 !important;
+  color: #f4d99b !important;
+}
+
+.pf-v5-c-alert__title,
+.pf-v5-c-alert__description,
+.kc-feedback-text,
+.pf-m-error {
+  color: inherit !important;
+}
+
+.pf-v5-c-helper-text,
+.pf-v5-c-helper-text__item-text,
+.pf-v5-u-color-200,
+.instruction,
+.subtitle {
+  color: var(--cv-muted) !important;
+}
+
+#kc-registration,
+#kc-info,
+#kc-form-options,
+#kc-social-providers {
+  color: var(--cv-muted);
+}
+
+.kc-social-links,
+.pf-v5-c-login__main-footer-links {
+  border-color: var(--cv-border) !important;
+}
+
+#kc-locale-dropdown button,
+#kc-locale-dropdown a {
+  color: #9fb3c5 !important;
+}
+
+.pf-v5-c-menu,
+.pf-v5-c-dropdown__menu {
+  border: 1px solid var(--cv-border) !important;
+  background: #162332 !important;
+  color: var(--cv-text) !important;
+}
+
+.pf-v5-c-menu__item:hover,
+.pf-v5-c-dropdown__menu-item:hover {
+  background: #1b3534 !important;
+}
+
+hr,
+.kc-login-divider {
+  border-color: var(--cv-border) !important;
+}
+
+@media (max-width: 520px) {
+  .pf-v5-c-login__container {
+    padding: 16px 12px;
+  }
+
+  .pf-v5-c-login__main {
+    border-radius: 14px;
+  }
+
+  .pf-v5-c-login__main::before {
+    padding: 20px 20px 0;
+  }
+
+  .pf-v5-c-login__main::after {
+    top: 51px;
+    left: 21px;
+  }
+
+  .pf-v5-c-login__main-header,
+  .pf-v5-c-login__main-body,
+  .pf-v5-c-login__main-footer {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  #kc-page-title,
+  .pf-v5-c-title {
+    font-size: 24px !important;
+  }
+}

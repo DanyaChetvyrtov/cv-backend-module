@@ -5,7 +5,8 @@ Kotlin 2.2.20, Gradle 8.14.3, Java 21, Spring Boot 3.5.16 / Spring Security.
 
 React обращается к BFF по `/api/*`. Kotlin выполняет Authorization Code + PKCE, хранит access/refresh-токены
 в HTTP-сессии и отдаёт браузеру HttpOnly-cookie `BFFSESSION`. Python CV вызывается сервером по внутреннему HTTP.
-Вход и регистрация используют формы Keycloak через серверные редиректы.
+Вход и регистрация используют формы Keycloak через серверные редиректы. Для login flow подключена кастомная тема
+`keycloak/themes/cv-access`, повторяющая тёмную зелёно-синюю стилистику React-приложения.
 
 ## Запуск
 
@@ -15,7 +16,7 @@ UI: **http://127.0.0.1:5173/**; Keycloak: http://localhost:8081/.
 Учебные аккаунты: `demo / demo123` (USER), `manager / manager123` (USER, ADMIN).
 
 Одноразовый `keycloak-init` вызывает [scripts/configure_bff.py](scripts/configure_bff.py):
-создаёт/обновляет confidential-клиент `demo-bff`, PKCE, callback/logout, scope mappings и регистрацию;
+создаёт/обновляет confidential-клиент `demo-bff`, PKCE, callback/logout, scope mappings, регистрацию и login theme `cv-access`;
 отключает старые `demo-browser`/`demo-cli`. Существующие пользователи не удаляются.
 Новым пользователям назначается только USER. Secret и BFF должны использовать одно значение.
 
@@ -121,3 +122,12 @@ An employee record does not create a Keycloak account. This photo demo has no li
 Root CI verifies enrollment, recognition from a resized/re-encoded query, duplicate prevention, USER/ADMIN/CSRF,
 invalid photos, deletion, and persistence after BFF/CV restart. The sample NASA astronaut photo is only a public-domain test fixture.
 To include that scenario manually, install Pillow and pass `--face-image /path/to/test-face.png` to the smoke test.
+
+
+## Keycloak login theme
+
+Тема находится в `keycloak/themes/cv-access/login` и наследует `keycloak.v2`, поэтому стандартные страницы
+Keycloak (login, registration, required actions, MFA и ошибки) продолжают использовать штатные FreeMarker-шаблоны.
+Кастомизация ограничена CSS и сообщениями локализации, что уменьшает риск поломки при обновлении Keycloak.
+
+Realm автоматически настраивается на `loginTheme=cv-access`, локали `ru` и `en`, язык по умолчанию — русский.

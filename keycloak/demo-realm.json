@@ -1,6 +1,6 @@
 {
   "realm": "demo",
-  "displayName": "Kotlin Keycloak Demo",
+  "displayName": "CV Access",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": true,
@@ -148,5 +148,12 @@
         ]
       }
     ]
-  }
+  },
+  "loginTheme": "cv-access",
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "ru",
+    "en"
+  ],
+  "defaultLocale": "ru"
 }

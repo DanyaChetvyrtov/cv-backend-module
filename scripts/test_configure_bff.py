@@ -117,6 +117,11 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual([role["name"] for role in self.state["group_roles"]], ["USER"])
         self.assertEqual({role["name"] for role in self.state["scopes"]}, {"USER", "ADMIN"})
         self.assertTrue(self.state["realm"]["registrationAllowed"])
+        self.assertEqual(self.state["realm"]["loginTheme"], "cv-access")
+        self.assertTrue(self.state["realm"]["internationalizationEnabled"])
+        self.assertEqual(self.state["realm"]["supportedLocales"], ["ru", "en"])
+        self.assertEqual(self.state["realm"]["defaultLocale"], "ru")
+        self.assertEqual(self.state["realm"]["displayName"], "CV Access")
 
     def test_registration_refuses_an_elevated_default_group(self):
         self.state["group"] = {"id": "group", "name": "demo-users"}
