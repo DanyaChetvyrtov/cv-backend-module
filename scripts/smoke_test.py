@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise the full BFF through its public web origin with a real Keycloak and CV (stdlib only)."""
+"""Exercise the full BFF through its public web origin with a real Keycloak and CV (Pillow is needed for employee face tests)."""
 
 import argparse
 import http.cookiejar
 import json
 import os
 import secrets
+from pathlib import Path
 import struct
 import urllib.error
 import urllib.parse
@@ -78,7 +79,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--web-url", default="http://127.0.0.1:5173")
     parser.add_argument("--keycloak-url", default="http://localhost:8081")
+    parser.add_argument("--face-image", default=os.getenv("CV_FACE_TEST_IMAGE"))
+    parser.add_argument("--persistence-state")
+    parser.add_argument("--verify-persistence", action="store_true")
     args = parser.parse_args()
+    if args.verify_persistence and not (args.persistence_state and args.face_image):
+        parser.error("--verify-persistence needs --persistence-state and --face-image")
     web, keycloak = args.web_url.rstrip("/"), args.keycloak_url.rstrip("/")
     plain = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -109,6 +115,8 @@ def main():
     representation.setdefault("attributes", {})["access.token.lifespan"] = "60"
     admin(client_path, "PUT", representation, expected=204)
     temporary_user = None
+    created_employee = None
+    keep_employee = False
 
     def browser():
         jar = http.cookiejar.CookieJar(policy=LocalhostCookies())
@@ -185,14 +193,64 @@ def main():
         result, _ = api(client, "/api/vision/detect?confidence=" + confidence, expected=expected, data=body, headers=headers)
         return json.loads(result) if result else None
 
+    def employee_request(client, path, image=None, fields=None, method="POST", expected=200, include_csrf=True):
+        headers = {}
+        if include_csrf:
+            value = csrf(client)
+            headers[value["headerName"]] = value["token"]
+        data = None
+        if image is not None:
+            boundary = "employee-smoke-boundary"
+            chunks = []
+            for key, text in (fields or {}).items():
+                chunks.append((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{text}\r\n').encode())
+            chunks.append((f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="photo.png"\r\nContent-Type: image/png\r\n\r\n').encode() + image + b"\r\n")
+            chunks.append(f"--{boundary}--\r\n".encode())
+            data = b"".join(chunks)
+            headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+        body, _ = api(client, path, expected=expected, method=method, data=data, headers=headers)
+        return json.loads(body) if body else None
+
+    def face_photos():
+        from io import BytesIO
+        from PIL import Image
+        photo = Path(args.face_image).read_bytes()
+        source = Image.open(BytesIO(photo)).convert("RGB")
+        query = BytesIO()
+        source.resize((460, 460)).save(query, format="JPEG", quality=90)
+        many = Image.new("RGB", (source.width * 2, source.height))
+        many.paste(source, (0, 0))
+        many.paste(source, (source.width, 0))
+        output = BytesIO()
+        many.save(output, format="PNG")
+        return photo, query.getvalue(), output.getvalue()
+
     try:
+        if args.verify_persistence:
+            state = json.loads(Path(args.persistence_state).read_text())
+            assert state["employeeCode"].startswith("SMOKE-")
+            created_employee = state["id"]
+            manager, manager_jar = browser()
+            authorize(manager, manager_jar, "manager", "manager123")
+            listing, _ = api(manager, "/api/employees?size=100")
+            assert any(item["id"] == state["id"] and item["employeeCode"] == state["employeeCode"] for item in json.loads(listing)["items"])
+            _, query_photo, _ = face_photos()
+            result = employee_request(manager, "/api/employees/identifications", image=query_photo)
+            assert result["status"] == "matched" and result["employee"]["id"] == state["id"]
+            employee_request(manager, "/api/employees/" + state["id"], method="DELETE", expected=204)
+            created_employee = None
+            result = employee_request(manager, "/api/employees/identifications", image=query_photo)
+            assert result["status"] == "unknown" and result["employee"] is None
+            logout(manager)
+            print("PASS employee data/templates survive BFF and CV restart; deletion removes recognition")
+            return
         html, _ = send(plain, web + "/")
         assert b'<div id="root">' in html and b"/assets/" in html
         public, _ = api(plain, "/api/public")
         assert "issuerUri" not in json.loads(public)
         health, _ = api(plain, "/api/health")
         assert json.loads(health)["status"] == "ok"
-        for endpoint in ("me", "user", "admin"):
+        for endpoint in ("me", "user", "admin", "employees"):
             api(plain, "/api/" + endpoint, expected=401)
         api(plain, "/api/me", expected=401, headers={"Authorization": "Bearer browser-token-is-not-accepted"})
         anonymous, _ = browser()
@@ -214,6 +272,43 @@ def main():
         profile = authorize(manager, manager_jar, "manager", "manager123")
         assert set(profile["roles"]) == {"USER", "ADMIN"}
         api(manager, "/api/admin")
+        if args.face_image:
+            photo, query_photo, many_photo = face_photos()
+            fields = {"employeeCode": "SMOKE-" + secrets.token_hex(8).upper(), "fullName": "BFF Smoke Worker", "department": "Integration"}
+            employee_request(manager, "/api/employees", image=photo, fields=fields, expected=403, include_csrf=False)
+            ordinary, ordinary_jar = browser()
+            authorize(ordinary, ordinary_jar, "demo", "demo123")
+            employee_request(ordinary, "/api/employees", image=photo, fields=fields, expected=403)
+            api(ordinary, "/api/employees", expected=403)
+            before = employee_request(manager, "/api/employees/identifications", image=photo)
+            assert before["status"] == "unknown"
+            employee = employee_request(manager, "/api/employees", image=photo, fields=fields, expected=201)
+            created_employee = employee["id"]
+            assert employee["employeeCode"] == fields["employeeCode"] and "embedding" not in employee
+            listing, _ = api(manager, "/api/employees?size=100")
+            assert "embedding" not in listing.decode() and any(item["id"] == created_employee for item in json.loads(listing)["items"])
+            result = employee_request(ordinary, "/api/employees/identifications", image=query_photo)
+            assert result["status"] == "matched" and result["employee"]["id"] == created_employee
+            assert result["similarity"] > result["threshold"]
+            employee_request(manager, "/api/employees", image=photo, fields={**fields, "employeeCode": fields["employeeCode"] + "-DUP"}, expected=409)
+            for invalid_photo in (blank_png(), many_photo):
+                employee_request(manager, "/api/employees", image=invalid_photo, fields=fields, expected=422)
+                employee_request(ordinary, "/api/employees/identifications", image=invalid_photo, expected=422)
+            employee_request(ordinary, "/api/employees/" + created_employee, method="DELETE", expected=403)
+            employee_request(manager, "/api/employees/" + created_employee, method="DELETE", expected=403, include_csrf=False)
+            employee_request(manager, "/api/employees/" + created_employee, method="DELETE", expected=204)
+            created_employee = None
+            result = employee_request(ordinary, "/api/employees/identifications", image=query_photo)
+            assert result["status"] == "unknown" and result["employee"] is None
+            if args.persistence_state:
+                employee = employee_request(manager, "/api/employees", image=photo, fields=fields, expected=201)
+                created_employee = employee["id"]
+                Path(args.persistence_state).write_text(json.dumps({"id": created_employee, "employeeCode": employee["employeeCode"]}))
+                keep_employee = True
+            logout(ordinary)
+            print("PASS employee enrollment, real face recognition, unknown face, duplicate prevention, invalid photos, ADMIN/USER and deletion")
+        else:
+            print("SKIP employee recognition: provide --face-image and install Pillow")
         logout(manager)
         temporary_user = "bff-smoke-" + secrets.token_hex(8)
         registered, registered_jar = browser()
@@ -228,6 +323,11 @@ def main():
         api(registered, "/api/me", expected=401)
         print("PASS BFF login, registration, cookie/CSRF, USER/ADMIN, server refresh, provider revocation, logout and real CV")
     finally:
+        if created_employee and not keep_employee:
+            cleaner, cleaner_jar = browser()
+            authorize(cleaner, cleaner_jar, "manager", "manager123")
+            employee_request(cleaner, "/api/employees/" + created_employee, method="DELETE", expected=204)
+            logout(cleaner)
         if temporary_user:
             for account in admin("/users?username=" + temporary_user + "&exact=true"):
                 admin("/users/" + account["id"], "DELETE", expected=204)

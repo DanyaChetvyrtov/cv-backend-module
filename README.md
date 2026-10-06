@@ -9,7 +9,7 @@ React обращается к BFF по `/api/*`. Kotlin выполняет Autho
 
 ## Запуск
 
-Запускайте единый Compose из [cv-complex-test](https://github.com/DanyaChetvyrtov/cv-complex-test).
+Запускайте единый Compose из [cv-complex-test](https://github.com/DanyaChetvyrtov/cv-root).
 В модуле нет Compose-файлов. Корень запускает также Nginx/React, Python и Keycloak.
 UI: **http://127.0.0.1:5173/**; Keycloak: http://localhost:8081/.
 Учебные аккаунты: `demo / demo123` (USER), `manager / manager123` (USER, ADMIN).
@@ -87,3 +87,37 @@ python3 scripts/smoke_test.py
 
 Для production нужны HTTPS, secret management, PostgreSQL для Keycloak и общий session store BFF при масштабировании.
 MFA настраивается в Keycloak; в учебном realm принудительно не включена.
+
+## Employee registry and face identification
+
+The BFF owns employee metadata and 128-dimensional face templates in PostgreSQL. Liquibase creates the schema;
+`DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD` configure the database (defaults: local database `employees`).
+A local IDE launch needs a reachable PostgreSQL database; the root Compose database is internal.
+The test profile uses H2 in PostgreSQL mode with the same migrations. Root CI additionally exercises real PostgreSQL.
+
+* `GET /api/employees?page=0&size=20` — ADMIN, paged list (max size 100).
+* `POST /api/employees` — ADMIN + CSRF, multipart `employeeCode`, `fullName`, optional `department`, `image`; returns 201 and metadata.
+* `DELETE /api/employees/{id}` — ADMIN + CSRF, removes metadata and template; returns 204 or 404.
+* `POST /api/employees/identifications` — USER + CSRF, multipart `image`.
+
+Employee codes are normalized to uppercase ASCII letters/digits/underscore/hyphen. Registration rejects duplicate codes
+or sufficiently similar existing faces with 409. A database row lock serializes enrollment across BFF instances.
+Only the internal CV endpoint `/faces/embedding` returns a face vector; no embeddings or source photos are sent to React.
+The BFF compares normalized SFace vectors using cosine similarity. `FACE_SIMILARITY_THRESHOLD=0.5` and
+`FACE_AMBIGUITY_MARGIN=0.05` are server settings. They require calibration with your own enrollment/query/impostor photos.
+A similarity score is not a probability. One template is stored per employee; matching currently scans the registry.
+A changed model version returns 503 until employees are re-enrolled; incompatible templates are never compared.
+
+Identification response:
+
+```json
+{"status":"matched","employee":{"id":"uuid","employeeCode":"EMP-001","fullName":"Иван Иванов","department":null,"createdAt":"timestamp"},"similarity":0.87,"threshold":0.5}
+```
+
+`unknown` or `ambiguous` returns `employee: null`. No face/multiple faces/small face returns 422;
+malformed image returns 400, unsupported format 415, oversize image 413; unavailable CV returns 503.
+An employee record does not create a Keycloak account. This photo demo has no liveness/anti-spoofing and does not open a physical gate.
+
+Root CI verifies enrollment, recognition from a resized/re-encoded query, duplicate prevention, USER/ADMIN/CSRF,
+invalid photos, deletion, and persistence after BFF/CV restart. The sample NASA astronaut photo is only a public-domain test fixture.
+To include that scenario manually, install Pillow and pass `--face-image /path/to/test-face.png` to the smoke test.

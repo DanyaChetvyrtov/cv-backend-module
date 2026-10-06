@@ -82,6 +82,10 @@ class SecurityConfiguration(private val keycloak: KeycloakProperties, private va
                 it.requestMatchers(HttpMethod.GET, "/api/user").hasRole("USER")
                 it.requestMatchers(HttpMethod.GET, "/api/admin").hasRole("ADMIN")
                 it.requestMatchers(HttpMethod.POST, "/api/vision/detect").hasRole("USER")
+                it.requestMatchers(HttpMethod.POST, "/api/employees/identifications").hasRole("USER")
+                it.requestMatchers(HttpMethod.GET, "/api/employees").hasRole("ADMIN")
+                it.requestMatchers(HttpMethod.POST, "/api/employees").hasRole("ADMIN")
+                it.requestMatchers(HttpMethod.DELETE, "/api/employees/*").hasRole("ADMIN")
                 it.anyRequest().denyAll()
             }
             .exceptionHandling {

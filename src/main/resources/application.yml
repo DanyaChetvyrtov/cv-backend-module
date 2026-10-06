@@ -1,6 +1,12 @@
 spring:
   application:
     name: keycloak-integration-test
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://127.0.0.1:5432/employees}
+    username: ${DATABASE_USERNAME:employees}
+    password: ${DATABASE_PASSWORD:local-employees-password}
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.xml
   servlet:
     multipart:
       max-file-size: 10MB
@@ -29,6 +35,10 @@ bff:
 
 vision:
   base-url: ${CV_SERVICE_URL:http://127.0.0.1:8000}
+
+employees:
+  similarity-threshold: ${FACE_SIMILARITY_THRESHOLD:0.5}
+  ambiguity-margin: ${FACE_AMBIGUITY_MARGIN:0.05}
 
 management:
   endpoints:

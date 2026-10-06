@@ -11,7 +11,9 @@ import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import dev.keycloak.demo.employees.EmployeeService
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -19,15 +21,18 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.mock.web.MockHttpSession
 import org.springframework.mock.web.MockMultipartFile
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.security.core.context.SecurityContext
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizedClientRepository
 import org.springframework.security.oauth2.core.OAuth2AccessToken
+import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.get
+import org.springframework.test.web.servlet.delete
 import org.springframework.test.web.servlet.multipart
 import org.springframework.test.web.servlet.post
 import java.net.InetSocketAddress
@@ -42,13 +47,25 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 
 /** Real OIDC filter chain, token exchange, RSA/nonce validation, session, CSRF and CV HTTP forwarding. */
 @SpringBootTest
+@ActiveProfiles("test")
 @AutoConfigureMockMvc
 class SecurityIntegrationTest {
     @Autowired lateinit var mvc: MockMvc
     @Autowired lateinit var clients: OAuth2AuthorizedClientRepository
+    @Autowired lateinit var jdbc: JdbcTemplate
+    @Autowired lateinit var employees: EmployeeService
+
+    @BeforeEach
+    fun resetEmployees() {
+        jdbc.update("DELETE FROM employees")
+        faceStatus.set(200)
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to vector(0)))
+    }
 
     @Test
     fun `public routes do not expose OAuth configuration or tokens`() {
@@ -246,6 +263,119 @@ class SecurityIntegrationTest {
         assertTrue(session.isInvalid)
     }
 
+    @Test
+    fun `employee registry is admin only and identification requires USER with CSRF`() {
+        mvc.get("/api/employees").andExpect { status { isUnauthorized() } }
+        val user = login()
+        mvc.get("/api/employees") { session = user }.andExpect { status { isForbidden() } }
+        register(user).andExpect { status { isForbidden() } }
+        mvc.delete("/api/employees/${UUID.randomUUID()}") { session = user; header("X-CSRF-TOKEN", csrf(user)) }
+            .andExpect { status { isForbidden() } }
+        val admin = login("manager", listOf("USER", "ADMIN"))
+        mvc.multipart("/api/employees") { session = admin; file(image()); param("employeeCode", "EMP-1"); param("fullName", "Name") }
+            .andExpect { status { isForbidden() } }
+        mvc.multipart("/api/employees/identifications") { session = user; file(image()) }
+            .andExpect { status { isForbidden() } }
+        val anonymous = mvc.get("/api/auth/csrf").andReturn().request.session as MockHttpSession
+        identify(anonymous).andExpect { status { isUnauthorized() } }
+    }
+
+    @Test
+    fun `register identify list paginate and delete employee without exposing biometrics`() {
+        val admin = login("manager", listOf("USER", "ADMIN"))
+        val created = register(admin, " emp-1 ").andExpect {
+            status { isCreated() }
+            jsonPath("$.employeeCode") { value("EMP-1") }
+            jsonPath("$.faceEmbedding") { doesNotExist() }
+            jsonPath("$.embedding") { doesNotExist() }
+            jsonPath("$.model") { doesNotExist() }
+        }.andReturn()
+        val id = mapper.readTree(created.response.contentAsString)["id"].asText()
+        assertEquals("/api/employees/$id", created.response.getHeader("Location"))
+        mvc.get("/api/employees?page=0&size=1") { session = admin }.andExpect {
+            status { isOk() }; jsonPath("$.total") { value(1) }; jsonPath("$.items[0].fullName") { value("Demo Worker") }
+            jsonPath("$.items[0].faceEmbedding") { doesNotExist() }
+        }
+        mvc.get("/api/employees?page=1&size=1") { session = admin }.andExpect { jsonPath("$.items.length()") { value(0) } }
+        mvc.get("/api/employees?size=101") { session = admin }.andExpect { status { isBadRequest() } }
+        val user = login()
+        identify(user).andExpect {
+            status { isOk() }; jsonPath("$.status") { value("matched") }; jsonPath("$.employee.id") { value(id) }
+            jsonPath("$.embedding") { doesNotExist() }
+        }
+        assertNull(lastFaceCookie.get()); assertNull(lastFaceAuthorization.get())
+        mvc.delete("/api/employees/$id") { session = admin }.andExpect { status { isForbidden() } }
+        mvc.delete("/api/employees/$id") { session = admin; header("X-CSRF-TOKEN", csrf(admin)) }.andExpect { status { isNoContent() } }
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM employees", Int::class.java))
+        identify(user).andExpect { jsonPath("$.status") { value("unknown") }; jsonPath("$.employee") { isEmpty() } }
+        mvc.delete("/api/employees/$id") { session = admin; header("X-CSRF-TOKEN", csrf(admin)) }.andExpect { status { isNotFound() } }
+    }
+
+    @Test
+    fun `unknown faces and close candidates never expose an employee identity`() {
+        val admin = login("manager", listOf("USER", "ADMIN"))
+        register(admin).andExpect { status { isCreated() } }
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to vector(1)))
+        register(admin, "EMP-2").andExpect { status { isCreated() } }
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to vector(2)))
+        identify(admin).andExpect { jsonPath("$.status") { value("unknown") }; jsonPath("$.employee") { isEmpty() } }
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to List(128) { if (it < 2) 1.0 else 0.0 }))
+        identify(admin).andExpect { jsonPath("$.status") { value("ambiguous") }; jsonPath("$.employee") { isEmpty() } }
+    }
+
+    @Test
+    fun `duplicate employee codes or faces are rejected without changing the registry`() {
+        val admin = login("manager", listOf("USER", "ADMIN"))
+        register(admin).andExpect { status { isCreated() } }
+        register(admin, "EMP-2").andExpect { status { isConflict() } }
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to vector(1)))
+        register(admin).andExpect { status { isConflict() } }
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM employees", Int::class.java))
+        register(admin, "bad code").andExpect { status { isBadRequest() } }
+    }
+
+    @Test
+    fun `simultaneous registrations cannot create duplicate face templates`() {
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val outcomes = pool.invokeAll(listOf("CONCURRENT-1", "CONCURRENT-2").map { code -> Callable {
+                try { employees.create(code, "Worker", null, image()); 201 }
+                catch (exception: org.springframework.web.server.ResponseStatusException) { exception.statusCode.value() }
+            } }).map { it.get() }.sorted()
+            assertEquals(listOf(201, 409), outcomes)
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM employees", Int::class.java))
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test
+    fun `invalid face data failed inference and changed models do not become negative matches`() {
+        val admin = login("manager", listOf("USER", "ADMIN"))
+        faceStatus.set(422)
+        register(admin).andExpect { status { isUnprocessableEntity() }; jsonPath("$.detail") { value("exactly one face required") } }
+        faceStatus.set(503)
+        identify(admin).andExpect { status { isServiceUnavailable() } }
+        faceStatus.set(200)
+        for (embedding in listOf(emptyList(), List(128) { 0.0 })) {
+            faceReply.set(mapOf("model" to "sface-fixture", "embedding" to embedding))
+            register(admin).andExpect { status { isBadGateway() } }
+        }
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM employees", Int::class.java))
+        faceReply.set(mapOf("model" to "sface-fixture", "embedding" to vector(0)))
+        register(admin).andExpect { status { isCreated() } }
+        faceReply.set(mapOf("model" to "another-model", "embedding" to vector(0)))
+        identify(admin).andExpect { status { isServiceUnavailable() } }
+        register(admin, "EMP-2").andExpect { status { isServiceUnavailable() } }
+    }
+
+    private fun register(session: MockHttpSession, code: String = "EMP-1") = mvc.multipart("/api/employees") {
+        this.session = session; file(image()); param("employeeCode", code); param("fullName", "Demo Worker")
+        header("X-CSRF-TOKEN", csrf(session))
+    }
+
+    private fun identify(session: MockHttpSession) = mvc.multipart("/api/employees/identifications") {
+        this.session = session; file(image()); header("X-CSRF-TOKEN", csrf(session))
+    }
+
     private fun image() = MockMultipartFile("image", "photo.png", "image/png", "sample-image".toByteArray())
 
     private fun csrf(session: MockHttpSession): String = mapper.readTree(
@@ -300,6 +430,11 @@ class SecurityIntegrationTest {
         private val lastCvQuery = AtomicReference("")
         private val lastCvCookie = AtomicReference<String?>()
         private val lastCvAuthorization = AtomicReference<String?>()
+        private val faceStatus = AtomicInteger(200)
+        private val faceReply = AtomicReference<Map<String, Any>>(emptyMap())
+        private val lastFaceCookie = AtomicReference<String?>()
+        private val lastFaceAuthorization = AtomicReference<String?>()
+        private fun vector(axis: Int): List<Double> = List(128) { if (it == axis) 1.0 else 0.0 }
         private val oidc = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         private val ISSUER = "http://127.0.0.1:" + oidc.address.port + "/realms/demo"
         private val cv = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -341,6 +476,13 @@ class SecurityIntegrationTest {
                 lastCvAuthorization.set(exchange.requestHeaders.getFirst("Authorization"))
                 if (cvStatus.get() != 200) reply(exchange, cvStatus.get(), mapOf("detail" to "fixture CV error"))
                 else reply(exchange, 200, mapOf("width" to 64, "height" to 64, "model" to "fixture", "detections" to emptyList<Any>()))
+            }
+            cv.createContext("/faces/embedding") { exchange ->
+                exchange.requestBody.readAllBytes()
+                lastFaceCookie.set(exchange.requestHeaders.getFirst("Cookie"))
+                lastFaceAuthorization.set(exchange.requestHeaders.getFirst("Authorization"))
+                if (faceStatus.get() == 200) reply(exchange, 200, faceReply.get())
+                else reply(exchange, faceStatus.get(), mapOf("detail" to "exactly one face required"))
             }
             cv.start()
         }
